@@ -1,0 +1,964 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Шпион</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:      #0d0d14;
+      --bg2:     #13131f;
+      --bg3:     #1c1c2e;
+      --bg4:     #252538;
+      --accent:  #7c3aed;
+      --accent2: #a855f7;
+      --danger:  #ef4444;
+      --success: #22c55e;
+      --warn:    #f59e0b;
+      --text:    #e2e8f0;
+      --text2:   #94a3b8;
+      --border:  #2a2a40;
+      --radius:  12px;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Screens ── */
+    .screen { display: none; flex: 1; }
+    .screen.active { display: flex; flex-direction: column; }
+
+    /* ── Common ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 24px;
+    }
+
+    button {
+      border: none;
+      border-radius: 8px;
+      padding: 10px 20px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity .15s, transform .1s;
+    }
+    button:active { transform: scale(.97); }
+    button:disabled { opacity: .4; cursor: not-allowed; }
+
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-primary:hover:not(:disabled) { background: var(--accent2); }
+    .btn-danger  { background: var(--danger); color: #fff; }
+    .btn-danger:hover:not(:disabled) { filter: brightness(1.15); }
+    .btn-success { background: var(--success); color: #fff; }
+    .btn-success:hover:not(:disabled) { filter: brightness(1.15); }
+    .btn-ghost   { background: var(--bg4); color: var(--text); border: 1px solid var(--border); }
+    .btn-ghost:hover:not(:disabled)   { background: var(--bg3); }
+
+    input, select {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      font-size: 14px;
+      padding: 10px 14px;
+      outline: none;
+      width: 100%;
+      transition: border-color .15s;
+    }
+    input:focus, select:focus { border-color: var(--accent); }
+
+    .error-msg {
+      color: var(--danger);
+      font-size: 13px;
+      min-height: 18px;
+    }
+
+    /* ───────────────────────── HOME SCREEN ───────────────────────── */
+    #screen-home {
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .home-box {
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .logo {
+      text-align: center;
+      margin-bottom: 36px;
+    }
+    .logo h1 {
+      font-size: 48px;
+      font-weight: 900;
+      letter-spacing: 4px;
+      background: linear-gradient(135deg, var(--accent), var(--accent2));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+    .logo p {
+      color: var(--text2);
+      font-size: 14px;
+      margin-top: 4px;
+    }
+
+    .home-box .card { display: flex; flex-direction: column; gap: 14px; }
+    .home-box .card h2 { font-size: 16px; color: var(--text2); font-weight: 600; }
+
+    .tab-row { display: flex; gap: 8px; }
+    .tab-btn {
+      flex: 1;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px;
+      color: var(--text2);
+      font-weight: 600;
+      cursor: pointer;
+      transition: all .15s;
+    }
+    .tab-btn.active {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    /* ───────────────────────── LOBBY SCREEN ───────────────────────── */
+    #screen-lobby {
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .lobby-box {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .lobby-code {
+      text-align: center;
+      padding: 24px;
+    }
+    .lobby-code .label { color: var(--text2); font-size: 13px; margin-bottom: 8px; }
+    .lobby-code .code {
+      font-size: 52px;
+      font-weight: 900;
+      letter-spacing: 10px;
+      color: var(--accent2);
+      font-family: monospace;
+    }
+    .lobby-code .hint { color: var(--text2); font-size: 12px; margin-top: 8px; }
+
+    .player-list { display: flex; flex-direction: column; gap: 8px; }
+    .player-item {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .player-item .avatar {
+      width: 32px; height: 32px;
+      border-radius: 50%;
+      background: var(--accent);
+      display: flex; align-items: center; justify-content: center;
+      font-weight: 700; font-size: 14px;
+      flex-shrink: 0;
+    }
+    .player-item .pname { font-weight: 600; }
+    .player-item .crown { margin-left: auto; font-size: 16px; }
+
+    /* ───────────────────────── GAME SCREEN ───────────────────────── */
+    #screen-game {
+      flex-direction: row;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* Left panel */
+    .game-left {
+      width: 280px;
+      flex-shrink: 0;
+      background: var(--bg2);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      gap: 16px;
+      overflow-y: auto;
+    }
+
+    .timer-box {
+      text-align: center;
+      padding: 16px;
+      background: var(--bg3);
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+    }
+    .timer-box .t-label { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+    .timer-box .t-value {
+      font-size: 38px;
+      font-weight: 900;
+      font-family: monospace;
+      color: var(--success);
+      transition: color .5s;
+    }
+    .timer-box .t-value.warn  { color: var(--warn); }
+    .timer-box .t-value.danger { color: var(--danger); }
+
+    .role-card {
+      border-radius: var(--radius);
+      padding: 20px;
+      text-align: center;
+      border: 2px solid var(--border);
+    }
+    .role-card.spy {
+      background: linear-gradient(135deg, #1a0a0a, #2d0808);
+      border-color: var(--danger);
+    }
+    .role-card.civilian {
+      background: linear-gradient(135deg, #0a0a1a, #080820);
+      border-color: var(--accent);
+    }
+    .role-card .r-label { font-size: 11px; color: var(--text2); letter-spacing: 2px; text-transform: uppercase; }
+    .role-card .r-role  { font-size: 22px; font-weight: 800; margin: 6px 0 2px; }
+    .role-card.spy .r-role { color: var(--danger); }
+    .role-card.civilian .r-role { color: var(--accent2); }
+    .role-card .r-location { font-size: 15px; color: var(--text2); }
+
+    .players-panel h3 { font-size: 12px; color: var(--text2); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
+    .players-panel .p-item {
+      display: flex; align-items: center; gap: 8px;
+      padding: 8px 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      transition: background .15s;
+      border: 1px solid transparent;
+    }
+    .players-panel .p-item:hover { background: var(--bg3); border-color: var(--border); }
+    .players-panel .p-item.me { cursor: default; }
+    .players-panel .p-item.me:hover { background: transparent; border-color: transparent; }
+    .players-panel .p-avatar {
+      width: 28px; height: 28px; border-radius: 50%;
+      background: var(--accent); display: flex; align-items: center; justify-content: center;
+      font-size: 12px; font-weight: 700; flex-shrink: 0;
+    }
+    .players-panel .p-name { font-size: 14px; font-weight: 600; }
+    .players-panel .p-tag  { font-size: 11px; color: var(--text2); margin-left: auto; }
+
+    /* Right panel = chat + spy guess */
+    .game-right {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .game-header {
+      padding: 12px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 12px;
+      background: var(--bg2);
+    }
+    .game-header h2 { font-size: 16px; font-weight: 700; }
+    .game-header .room-code { font-size: 12px; color: var(--text2); margin-left: auto; font-family: monospace; }
+
+    .chat-area {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .chat-msg {
+      max-width: 75%;
+      padding: 8px 12px;
+      border-radius: 10px;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+    .chat-msg.me {
+      align-self: flex-end;
+      background: var(--accent);
+      border-bottom-right-radius: 3px;
+    }
+    .chat-msg.other {
+      align-self: flex-start;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-bottom-left-radius: 3px;
+    }
+    .chat-msg .msg-name { font-size: 11px; color: var(--text2); margin-bottom: 3px; }
+    .chat-msg.me .msg-name { color: rgba(255,255,255,.7); }
+    .chat-system {
+      align-self: center;
+      font-size: 12px;
+      color: var(--text2);
+      background: var(--bg3);
+      border-radius: 20px;
+      padding: 4px 12px;
+      border: 1px solid var(--border);
+    }
+
+    .chat-input-row {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: var(--bg2);
+      display: flex; gap: 8px;
+    }
+    .chat-input-row input { flex: 1; }
+
+    .spy-guess-bar {
+      padding: 12px 16px;
+      border-top: 1px solid var(--border);
+      background: #1a0808;
+      display: flex; gap: 8px; align-items: center;
+    }
+    .spy-guess-bar select { flex: 1; }
+    .spy-guess-bar .label { font-size: 12px; color: var(--danger); white-space: nowrap; font-weight: 600; }
+
+    /* ───────────────────────── VOTING SCREEN ───────────────────────── */
+    #screen-voting {
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .voting-box {
+      width: 100%;
+      max-width: 440px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      text-align: center;
+    }
+    .voting-box h2 { font-size: 22px; font-weight: 800; }
+    .voting-box .v-desc { color: var(--text2); font-size: 15px; }
+    .voting-box .target-name { color: var(--warn); font-weight: 700; font-size: 20px; }
+    .vote-buttons { display: flex; gap: 12px; }
+    .vote-buttons button { flex: 1; padding: 16px; font-size: 16px; }
+    .waiting-vote { color: var(--text2); font-size: 14px; }
+    .vote-progress { font-size: 13px; color: var(--text2); }
+
+    /* ───────────────────────── GAME OVER SCREEN ───────────────────────── */
+    #screen-over {
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .over-box {
+      width: 100%;
+      max-width: 480px;
+      display: flex;
+      flex-direction: column;
+      gap: 20px;
+      text-align: center;
+    }
+    .over-box .win-banner {
+      padding: 32px;
+      border-radius: var(--radius);
+      font-size: 28px;
+      font-weight: 900;
+    }
+    .over-box .win-banner.spy-wins {
+      background: linear-gradient(135deg, #2d0808, #1a0a0a);
+      border: 2px solid var(--danger);
+      color: var(--danger);
+    }
+    .over-box .win-banner.civ-wins {
+      background: linear-gradient(135deg, #082d08, #0a1a0a);
+      border: 2px solid var(--success);
+      color: var(--success);
+    }
+    .over-box .reveal { display: flex; flex-direction: column; gap: 8px; }
+    .reveal-row {
+      background: var(--bg3);
+      border-radius: 8px;
+      padding: 14px 20px;
+      border: 1px solid var(--border);
+      display: flex; justify-content: space-between; align-items: center;
+    }
+    .reveal-row .r-key { color: var(--text2); font-size: 13px; }
+    .reveal-row .r-val { font-weight: 700; font-size: 15px; }
+    .over-box .reason { color: var(--text2); font-size: 14px; }
+
+    /* ───────────────────────── RESPONSIVE ───────────────────────── */
+    @media (max-width: 640px) {
+      #screen-game { flex-direction: column; }
+      .game-left {
+        width: 100%;
+        height: auto;
+        border-right: none;
+        border-bottom: 1px solid var(--border);
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+      .timer-box  { flex: 0 0 auto; }
+      .role-card  { flex: 1; min-width: 140px; }
+      .players-panel { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════ HOME ═══════════════════════ -->
+<div id="screen-home" class="screen active">
+  <div class="home-box">
+    <div class="logo">
+      <h1>ШПИОН</h1>
+      <p>Найди шпиона среди нас</p>
+    </div>
+
+    <div class="card">
+      <div class="tab-row">
+        <button class="tab-btn active" id="tab-create" onclick="switchTab('create')">Создать</button>
+        <button class="tab-btn" id="tab-join" onclick="switchTab('join')">Войти</button>
+      </div>
+
+      <input id="home-name" type="text" placeholder="Ваше имя" maxlength="20" />
+
+      <div id="create-duration-wrap">
+        <select id="home-duration">
+          <option value="180">3 минуты</option>
+          <option value="300">5 минут</option>
+          <option value="480" selected>8 минут</option>
+          <option value="600">10 минут</option>
+          <option value="900">15 минут</option>
+          <option value="1200">20 минут</option>
+        </select>
+      </div>
+
+      <div id="join-code-wrap" style="display:none">
+        <input id="home-code" type="text" placeholder="Код комнаты (4 символа)" maxlength="4"
+               oninput="this.value=this.value.toUpperCase()" />
+      </div>
+
+      <div class="error-msg" id="home-error"></div>
+      <button class="btn-primary" id="home-btn" onclick="homeAction()">Создать комнату</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ LOBBY ═══════════════════════ -->
+<div id="screen-lobby" class="screen">
+  <div style="display:flex;align-items:center;justify-content:center;flex:1;padding:24px;">
+    <div class="lobby-box">
+      <div class="card lobby-code">
+        <div class="label">КОД КОМНАТЫ</div>
+        <div class="code" id="lobby-code-display">????</div>
+        <div class="hint">Поделитесь кодом с друзьями</div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px;">
+          <span style="font-size:13px;color:var(--text2);">ИГРОКИ (<span id="lobby-count">0</span>)</span>
+          <span style="font-size:12px;color:var(--text2);">минимум 3</span>
+        </div>
+        <div class="player-list" id="lobby-player-list"></div>
+      </div>
+
+      <div class="error-msg" id="lobby-error"></div>
+      <button class="btn-primary" id="lobby-start-btn" onclick="startGame()" style="display:none;padding:14px;font-size:16px;">
+        Начать игру
+      </button>
+      <div id="lobby-wait-msg" style="text-align:center;color:var(--text2);font-size:14px;display:none;">
+        Ждём хоста...
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ GAME ═══════════════════════ -->
+<div id="screen-game" class="screen">
+
+  <!-- Left panel -->
+  <div class="game-left">
+    <div class="timer-box">
+      <div class="t-label">ОСТАЛОСЬ ВРЕМЕНИ</div>
+      <div class="t-value" id="timer-display">8:00</div>
+    </div>
+
+    <div class="role-card" id="role-card">
+      <div class="r-label">ВЫ</div>
+      <div class="r-role" id="role-title">—</div>
+      <div class="r-location" id="role-location"></div>
+    </div>
+
+    <div class="players-panel">
+      <h3>Игроки — нажмите чтобы обвинить</h3>
+      <div id="game-player-list"></div>
+    </div>
+  </div>
+
+  <!-- Right panel -->
+  <div class="game-right">
+    <div class="game-header">
+      <h2>Шпион</h2>
+      <span class="room-code" id="game-room-code"></span>
+    </div>
+
+    <div class="chat-area" id="chat-area"></div>
+
+    <div class="spy-guess-bar" id="spy-guess-bar" style="display:none;">
+      <span class="label">Угадать локацию:</span>
+      <select id="spy-location-select"></select>
+      <button class="btn-danger" onclick="spyGuess()">Угадать!</button>
+    </div>
+
+    <div class="chat-input-row">
+      <input id="chat-input" type="text" placeholder="Напишите сообщение..." maxlength="300"
+             onkeydown="if(event.key==='Enter') sendChat()" />
+      <button class="btn-primary" onclick="sendChat()">→</button>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ VOTING ═══════════════════════ -->
+<div id="screen-voting" class="screen">
+  <div class="voting-box">
+    <div class="card">
+      <h2>Голосование!</h2>
+      <p class="v-desc" id="vote-desc">Обвиняется:</p>
+      <p class="target-name" id="vote-target-name"></p>
+
+      <div class="vote-buttons" id="vote-buttons">
+        <button class="btn-danger"  onclick="sendVote(true)">Виновен!</button>
+        <button class="btn-success" onclick="sendVote(false)">Невиновен</button>
+      </div>
+      <div class="waiting-vote" id="waiting-vote" style="display:none;">Ожидаем голосов...</div>
+      <div class="vote-progress" id="vote-progress"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ GAME OVER ═══════════════════════ -->
+<div id="screen-over" class="screen">
+  <div class="over-box">
+    <div class="win-banner" id="over-banner"></div>
+
+    <div class="reveal card">
+      <div class="reveal-row">
+        <span class="r-key">Шпион</span>
+        <span class="r-val" id="over-spy-name"></span>
+      </div>
+      <div class="reveal-row">
+        <span class="r-key">Локация</span>
+        <span class="r-val" id="over-location"></span>
+      </div>
+      <div class="reveal-row">
+        <span class="r-key">Причина</span>
+        <span class="r-val reason" id="over-reason"></span>
+      </div>
+    </div>
+
+    <button class="btn-primary" style="padding:14px;font-size:16px;" onclick="goHome()">
+      Сыграть снова
+    </button>
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  State
+// ══════════════════════════════════════════════════════
+let ws = null;
+let myID = '';
+let hostID = '';
+let roomCode = '';
+let isSpy = false;
+let myLocation = '';
+let players = [];   // [{id, name}]
+let gameTab = 'create';
+let timerInterval = null;
+let currentSeconds = 0;
+let inVoting = false;
+
+// ══════════════════════════════════════════════════════
+//  WebSocket
+// ══════════════════════════════════════════════════════
+function connect(cb) {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+  ws.onopen = cb;
+  ws.onmessage = e => handle(JSON.parse(e.data));
+  ws.onclose = () => {
+    showError('home-error', 'Соединение разорвано. Обновите страницу.');
+  };
+}
+
+function send(type, payload) {
+  if (ws && ws.readyState === WebSocket.OPEN)
+    ws.send(JSON.stringify({ type, payload }));
+}
+
+// ══════════════════════════════════════════════════════
+//  Message handler
+// ══════════════════════════════════════════════════════
+function handle(msg) {
+  const p = msg.payload || {};
+  switch (msg.type) {
+    case 'error':         showError(currentErrorTarget(), p.message); break;
+    case 'room_joined':   onRoomJoined(p); break;
+    case 'player_list':   onPlayerList(p); break;
+    case 'game_started':  onGameStarted(p); break;
+    case 'timer_tick':    onTimerTick(p.seconds); break;
+    case 'chat_msg':      addChatMsg(p); break;
+    case 'accuse_started': onAccuseStarted(p); break;
+    case 'accuse_result':  onAccuseResult(p); break;
+    case 'spy_guess_result': onSpyGuessResult(p); break;
+    case 'game_over':     onGameOver(p); break;
+  }
+}
+
+function currentErrorTarget() {
+  if (document.getElementById('screen-lobby').classList.contains('active')) return 'lobby-error';
+  return 'home-error';
+}
+
+// ══════════════════════════════════════════════════════
+//  Home screen
+// ══════════════════════════════════════════════════════
+function switchTab(tab) {
+  gameTab = tab;
+  document.getElementById('tab-create').classList.toggle('active', tab === 'create');
+  document.getElementById('tab-join').classList.toggle('active', tab === 'join');
+  document.getElementById('join-code-wrap').style.display = tab === 'join' ? '' : 'none';
+  document.getElementById('create-duration-wrap').style.display = tab === 'create' ? '' : 'none';
+  document.getElementById('home-btn').textContent = tab === 'create' ? 'Создать комнату' : 'Войти в комнату';
+}
+
+function homeAction() {
+  clearError('home-error');
+  const name = document.getElementById('home-name').value.trim();
+  if (!name) { showError('home-error', 'Введите ваше имя'); return; }
+
+  connect(() => {
+    if (gameTab === 'create') {
+      const duration = parseInt(document.getElementById('home-duration').value, 10);
+      send('create_room', { name, duration });
+    } else {
+      const code = document.getElementById('home-code').value.trim().toUpperCase();
+      if (!code || code.length !== 4) { showError('home-error', 'Введите 4-значный код'); return; }
+      send('join_room', { code, name });
+    }
+  });
+}
+
+// ══════════════════════════════════════════════════════
+//  Lobby
+// ══════════════════════════════════════════════════════
+function onRoomJoined(p) {
+  myID    = p.your_id;
+  hostID  = p.host_id;
+  roomCode = p.code;
+  players = p.players;
+
+  document.getElementById('lobby-code-display').textContent = p.code;
+  document.getElementById('game-room-code').textContent = 'Комната: ' + p.code;
+  renderLobbyPlayers();
+  showScreen('lobby');
+}
+
+function onPlayerList(p) {
+  players = p.players;
+  hostID  = p.host_id;
+  renderLobbyPlayers();
+  if (document.getElementById('screen-game').classList.contains('active')) {
+    renderGamePlayers();
+  }
+}
+
+function renderLobbyPlayers() {
+  const isHost = myID === hostID;
+  document.getElementById('lobby-count').textContent = players.length;
+  document.getElementById('lobby-start-btn').style.display = isHost ? '' : 'none';
+  document.getElementById('lobby-wait-msg').style.display  = isHost ? 'none' : '';
+
+  const el = document.getElementById('lobby-player-list');
+  el.innerHTML = '';
+  players.forEach(pl => {
+    const div = document.createElement('div');
+    div.className = 'player-item';
+    div.innerHTML = `
+      <div class="avatar">${pl.name[0].toUpperCase()}</div>
+      <span class="pname">${esc(pl.name)}${pl.id === myID ? ' (вы)' : ''}</span>
+      ${pl.id === hostID ? '<span class="crown" title="Хост">👑</span>' : ''}
+    `;
+    el.appendChild(div);
+  });
+}
+
+function startGame() {
+  clearError('lobby-error');
+  send('start_game', {});
+}
+
+// ══════════════════════════════════════════════════════
+//  Game
+// ══════════════════════════════════════════════════════
+function onGameStarted(p) {
+  isSpy      = p.role === 'spy';
+  myLocation = p.location || '';
+  players    = p.players;
+  inVoting   = false;
+
+  // Role card
+  const card = document.getElementById('role-card');
+  card.className = 'role-card ' + (isSpy ? 'spy' : 'civilian');
+  document.getElementById('role-title').textContent     = isSpy ? 'ШПИОН' : myLocation;
+  document.getElementById('role-location').textContent  = isSpy ? 'Угадай локацию!' : 'Локация известна';
+
+  // Spy guess bar
+  const bar = document.getElementById('spy-guess-bar');
+  if (isSpy) {
+    bar.style.display = '';
+    const sel = document.getElementById('spy-location-select');
+    sel.innerHTML = p.locations.map(l => `<option>${esc(l)}</option>`).join('');
+  } else {
+    bar.style.display = 'none';
+  }
+
+  // Clear chat
+  document.getElementById('chat-area').innerHTML = '';
+  addSystemMsg('🎮 Игра началась! Задавайте вопросы, ищите шпиона!');
+  if (isSpy) addSystemMsg('👁 Вы — ШПИОН. Слушайте внимательно!');
+  else addSystemMsg(`📍 Локация: ${myLocation}`);
+
+  // Timer
+  startTimer(p.duration);
+  renderGamePlayers();
+  showScreen('game');
+}
+
+function renderGamePlayers() {
+  const el = document.getElementById('game-player-list');
+  el.innerHTML = '';
+  players.forEach(pl => {
+    const div = document.createElement('div');
+    div.className = 'p-item' + (pl.id === myID ? ' me' : '');
+    div.innerHTML = `
+      <div class="p-avatar">${pl.name[0].toUpperCase()}</div>
+      <span class="p-name">${esc(pl.name)}</span>
+      <span class="p-tag">${pl.id === myID ? 'вы' : pl.id === hostID ? '👑' : ''}</span>
+    `;
+    if (pl.id !== myID) {
+      div.onclick = () => accusePlayer(pl.id, pl.name);
+      div.title = `Обвинить ${pl.name}`;
+    }
+    el.appendChild(div);
+  });
+}
+
+function accusePlayer(targetID, targetName) {
+  if (!confirm(`Обвинить ${targetName}?`)) return;
+  send('accuse', { target_id: targetID });
+}
+
+// Timer
+function startTimer(seconds) {
+  if (timerInterval) clearInterval(timerInterval);
+  currentSeconds = seconds;
+  updateTimerDisplay(seconds);
+  timerInterval = setInterval(() => {
+    currentSeconds--;
+    updateTimerDisplay(currentSeconds);
+    if (currentSeconds <= 0) clearInterval(timerInterval);
+  }, 1000);
+}
+
+function onTimerTick(s) {
+  currentSeconds = s;
+  updateTimerDisplay(s);
+}
+
+function updateTimerDisplay(s) {
+  if (s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  const el = document.getElementById('timer-display');
+  el.textContent = `${m}:${String(sec).padStart(2, '0')}`;
+  el.className = 't-value';
+  if (s <= 30) el.classList.add('danger');
+  else if (s <= 90) el.classList.add('warn');
+}
+
+// Chat
+function sendChat() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  send('chat', { text });
+}
+
+function addChatMsg(p) {
+  const area = document.getElementById('chat-area');
+  const div = document.createElement('div');
+  const isMe = p.from_id === myID;
+  div.className = 'chat-msg ' + (isMe ? 'me' : 'other');
+  div.innerHTML = `
+    ${!isMe ? `<div class="msg-name">${esc(p.from_name)}</div>` : ''}
+    ${esc(p.text)}
+  `;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+function addSystemMsg(text) {
+  const area = document.getElementById('chat-area');
+  const div = document.createElement('div');
+  div.className = 'chat-system';
+  div.textContent = text;
+  area.appendChild(div);
+  area.scrollTop = area.scrollHeight;
+}
+
+// Spy guess
+function spyGuess() {
+  const loc = document.getElementById('spy-location-select').value;
+  if (!confirm(`Угадать локацию "${loc}"?`)) return;
+  send('spy_guess', { location: loc });
+}
+
+function onSpyGuessResult(p) {
+  if (p.correct) {
+    addSystemMsg(`✅ ${esc(p.spy_name)} угадал локацию "${esc(p.location)}"!`);
+  } else {
+    addSystemMsg(`❌ ${esc(p.spy_name)} ошибся — "${esc(p.location)}" неверно!`);
+  }
+}
+
+// ══════════════════════════════════════════════════════
+//  Voting
+// ══════════════════════════════════════════════════════
+function onAccuseStarted(p) {
+  inVoting = true;
+  const isAccuser = p.accuser_id === myID;
+  const isTarget  = p.target_id  === myID;
+
+  document.getElementById('vote-target-name').textContent = p.target_name;
+  document.getElementById('vote-progress').textContent = '';
+
+  if (isAccuser || isTarget) {
+    document.getElementById('vote-buttons').style.display  = 'none';
+    document.getElementById('waiting-vote').style.display  = '';
+    const role = isAccuser ? 'обвинитель' : 'обвиняемый';
+    document.getElementById('waiting-vote').textContent = `Вы — ${role}. Ждём голосов...`;
+  } else {
+    document.getElementById('vote-buttons').style.display  = '';
+    document.getElementById('waiting-vote').style.display  = 'none';
+  }
+
+  if (isAccuser) {
+    document.getElementById('vote-desc').textContent = `Вы обвинили:`;
+  } else if (isTarget) {
+    document.getElementById('vote-desc').textContent = `Вас обвинил ${p.accuser_name}:`;
+  } else {
+    document.getElementById('vote-desc').textContent = `${p.accuser_name} обвиняет:`;
+  }
+
+  addSystemMsg(`⚠️ ${p.accuser_name} обвиняет ${p.target_name}! Голосуем...`);
+  showScreen('voting');
+}
+
+function sendVote(guilty) {
+  send('accuse_vote', { guilty });
+  document.getElementById('vote-buttons').style.display = 'none';
+  document.getElementById('waiting-vote').style.display = '';
+  document.getElementById('waiting-vote').textContent = 'Голос принят, ждём остальных...';
+}
+
+function onAccuseResult(p) {
+  inVoting = false;
+  const verdict = p.majority ? 'Большинство решило: ВИНОВЕН' : 'Большинство решило: НЕВИНОВЕН';
+  const spy_text = p.majority
+    ? (p.target_is_spy ? ' — и это был шпион!' : ' — но шпион не пойман...')
+    : '';
+  addSystemMsg(`🗳 ${p.target_name}: За — ${p.guilty_votes}, Против — ${p.innocent_votes}. ${verdict}${spy_text}`);
+  showScreen('game');
+}
+
+// ══════════════════════════════════════════════════════
+//  Game Over
+// ══════════════════════════════════════════════════════
+function onGameOver(p) {
+  if (timerInterval) clearInterval(timerInterval);
+
+  const spyWins = p.winner === 'spy';
+  const banner = document.getElementById('over-banner');
+  banner.className = 'win-banner ' + (spyWins ? 'spy-wins' : 'civ-wins');
+  banner.textContent = spyWins ? 'Шпион победил!' : 'Мирные победили!';
+
+  document.getElementById('over-spy-name').textContent  = p.spy_name;
+  document.getElementById('over-location').textContent  = p.location;
+  document.getElementById('over-reason').textContent    = reasonText(p.reason);
+
+  showScreen('over');
+}
+
+function reasonText(r) {
+  switch (r) {
+    case 'voted_spy':        return 'Шпион разоблачён голосованием';
+    case 'wrongly_accused':  return 'Невинный признан виновным';
+    case 'spy_guessed':      return 'Шпион угадал локацию';
+    case 'spy_guessed_wrong':return 'Шпион ошибся с локацией';
+    case 'time':             return 'Время вышло';
+    default:                 return r;
+  }
+}
+
+function goHome() {
+  if (ws) { ws.close(); ws = null; }
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
+  myID = ''; hostID = ''; roomCode = ''; isSpy = false; players = [];
+  document.getElementById('home-name').value = '';
+  document.getElementById('home-code').value = '';
+  clearError('home-error');
+  showScreen('home');
+}
+
+// ══════════════════════════════════════════════════════
+//  Helpers
+// ══════════════════════════════════════════════════════
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  document.getElementById('screen-' + name).classList.add('active');
+}
+
+function showError(id, msg) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = msg;
+}
+function clearError(id) { showError(id, ''); }
+
+function esc(s) {
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+</script>
+</body>
+</html>
