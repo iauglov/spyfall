@@ -3,7 +3,10 @@
     "allow": [
       "WebSearch",
       "Bash(cd:*)",
-      "Bash(go version:*)"
+      "Bash(go version:*)",
+      "Bash(go build *)",
+      "Bash(go vet *)",
+      "Bash(code . *)"
     ]
   }
 }

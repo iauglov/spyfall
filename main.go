@@ -11,8 +11,6 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-const defaultGameDuration = 8 * 60 // seconds
-
 var upgrader = websocket.Upgrader{
 	CheckOrigin: func(r *http.Request) bool { return true },
 }
@@ -41,28 +39,37 @@ func enc(t string, v interface{}) Msg {
 // ── Player ────────────────────────────────────────────────────────────────────
 
 type Player struct {
-	ID    string
-	Name  string
-	Conn  *websocket.Conn
-	mu    sync.Mutex
-	IsSpy bool
+	ID         string
+	Name       string
+	Token      string
+	Conn       *websocket.Conn
+	mu         sync.Mutex
+	IsSpy      bool
+	Alive      bool
+	Connected  bool
+	graceTimer *time.Timer
 }
 
 func (p *Player) send(v interface{}) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.Conn == nil {
+		return
+	}
 	_ = p.Conn.WriteJSON(v)
 }
 
 type PlayerInfo struct {
-	ID   string `json:"id"`
-	Name string `json:"name"`
+	ID        string `json:"id"`
+	Name      string `json:"name"`
+	Connected bool   `json:"connected"`
+	Alive     bool   `json:"alive"`
 }
 
 func toInfoList(players []*Player) []PlayerInfo {
 	list := make([]PlayerInfo, len(players))
 	for i, p := range players {
-		list[i] = PlayerInfo{p.ID, p.Name}
+		list[i] = PlayerInfo{p.ID, p.Name, p.Connected, p.Alive}
 	}
 	return list
 }
@@ -73,19 +80,47 @@ type AccuseState struct {
 	TargetID  string
 	AccuserID string
 	Votes     map[string]bool // playerID → guilty?
+	EndsAt    time.Time
+	timer     *time.Timer
 }
 
 type Room struct {
-	Code     string
-	Players  []*Player
-	HostID   string
-	mu       sync.Mutex
-	State    string // lobby | playing | voting | over
-	Location string
-	SpyID    string
-	Duration int
-	Accuse   *AccuseState
-	quit     chan struct{}
+	Code         string
+	Players      []*Player
+	HostID       string
+	mu           sync.Mutex
+	State        string // lobby | playing | voting | over
+	Location     string
+	SpyCount     int
+	Accuse       *AccuseState
+	LastGameOver map[string]interface{}
+}
+
+const (
+	graceLobby   = 60 * time.Second
+	graceGame    = 5 * time.Minute
+	maxSpies     = 3
+	voteDuration = 30 * time.Second
+)
+
+func (r *Room) aliveSpies() int {
+	n := 0
+	for _, p := range r.Players {
+		if p.IsSpy && p.Alive {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *Room) aliveCivilians() int {
+	n := 0
+	for _, p := range r.Players {
+		if !p.IsSpy && p.Alive {
+			n++
+		}
+	}
+	return n
 }
 
 func (r *Room) broadcast(v interface{}) {
@@ -101,14 +136,28 @@ func (r *Room) broadcast(v interface{}) {
 func (r *Room) startGame() {
 	r.mu.Lock()
 	r.Location = allLocations[rand.Intn(len(allLocations))]
-	spyIdx := rand.Intn(len(r.Players))
-	r.SpyID = r.Players[spyIdx].ID
-	for _, p := range r.Players {
-		p.IsSpy = p.ID == r.SpyID
+
+	// Pick SpyCount unique spies.
+	n := len(r.Players)
+	perm := rand.Perm(n)
+	spyCount := r.SpyCount
+	if spyCount < 1 {
+		spyCount = 1
+	}
+	if spyCount > n-2 {
+		spyCount = n - 2
+	}
+	spySet := make(map[int]bool, spyCount)
+	for i := 0; i < spyCount; i++ {
+		spySet[perm[i]] = true
+	}
+	for i, p := range r.Players {
+		p.IsSpy = spySet[i]
+		p.Alive = true
 	}
 	r.State = "playing"
-	r.quit = make(chan struct{})
-	snap := make([]*Player, len(r.Players))
+	r.LastGameOver = nil
+	snap := make([]*Player, n)
 	copy(snap, r.Players)
 	loc := r.Location
 	r.mu.Unlock()
@@ -126,29 +175,8 @@ func (r *Room) startGame() {
 			"location":  locVal,
 			"players":   infos,
 			"locations": allLocations,
-			"duration":  r.Duration,
+			"spy_count": spyCount,
 		}))
-	}
-
-	go r.runTimer()
-}
-
-func (r *Room) runTimer() {
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	left := r.Duration
-	for {
-		select {
-		case <-r.quit:
-			return
-		case <-ticker.C:
-			left--
-			r.broadcast(enc("timer_tick", map[string]int{"seconds": left}))
-			if left <= 0 {
-				r.endGame("time", true) // spy wins on timeout
-				return
-			}
-		}
 	}
 }
 
@@ -159,36 +187,27 @@ func (r *Room) endGame(reason string, spyWins bool) {
 		return
 	}
 	r.State = "over"
-	quit := r.quit
-	spyID := r.SpyID
 	loc := r.Location
-	spyName := ""
+	spies := []map[string]string{}
 	for _, p := range r.Players {
-		if p.ID == spyID {
-			spyName = p.Name
-			break
+		if p.IsSpy {
+			spies = append(spies, map[string]string{"id": p.ID, "name": p.Name})
 		}
 	}
-	r.mu.Unlock()
-
-	// safe close
-	select {
-	case <-quit:
-	default:
-		close(quit)
-	}
-
 	winner := "civilians"
 	if spyWins {
-		winner = "spy"
+		winner = "spies"
 	}
-	r.broadcast(enc("game_over", map[string]interface{}{
+	payload := map[string]interface{}{
 		"reason":   reason,
-		"spy_id":   spyID,
-		"spy_name": spyName,
+		"spies":    spies,
 		"location": loc,
 		"winner":   winner,
-	}))
+	}
+	r.LastGameOver = payload
+	r.mu.Unlock()
+
+	r.broadcast(enc("game_over", payload))
 }
 
 func (r *Room) startAccuse(accuserID, targetID string) {
@@ -197,12 +216,28 @@ func (r *Room) startAccuse(accuserID, targetID string) {
 		r.mu.Unlock()
 		return
 	}
+	var accuser, target *Player
+	for _, p := range r.Players {
+		if p.ID == accuserID {
+			accuser = p
+		}
+		if p.ID == targetID {
+			target = p
+		}
+	}
+	if accuser == nil || !accuser.Alive || target == nil || !target.Alive {
+		r.mu.Unlock()
+		return
+	}
 	r.State = "voting"
-	r.Accuse = &AccuseState{
+	acc := &AccuseState{
 		TargetID:  targetID,
 		AccuserID: accuserID,
 		Votes:     make(map[string]bool),
+		EndsAt:    time.Now().Add(voteDuration),
 	}
+	acc.timer = time.AfterFunc(voteDuration, r.finalizeAccuse)
+	r.Accuse = acc
 	snap := make([]*Player, len(r.Players))
 	copy(snap, r.Players)
 	r.mu.Unlock()
@@ -223,6 +258,7 @@ func (r *Room) startAccuse(accuserID, targetID string) {
 		"target_id":    targetID,
 		"target_name":  targetName,
 		"players":      toInfoList(snap),
+		"vote_seconds": int(voteDuration / time.Second),
 	}))
 }
 
@@ -237,6 +273,17 @@ func (r *Room) submitAccuseVote(voterID string, guilty bool) {
 		r.mu.Unlock()
 		return
 	}
+	var voter *Player
+	for _, p := range r.Players {
+		if p.ID == voterID {
+			voter = p
+			break
+		}
+	}
+	if voter == nil || !voter.Alive {
+		r.mu.Unlock()
+		return
+	}
 	if _, already := acc.Votes[voterID]; already {
 		r.mu.Unlock()
 		return
@@ -245,13 +292,45 @@ func (r *Room) submitAccuseVote(voterID string, guilty bool) {
 
 	eligible := 0
 	for _, p := range r.Players {
-		if p.ID != acc.AccuserID && p.ID != acc.TargetID {
+		if p.Alive && p.ID != acc.AccuserID && p.ID != acc.TargetID {
 			eligible++
 		}
 	}
 	if len(acc.Votes) < eligible {
 		r.mu.Unlock()
 		return
+	}
+	r.mu.Unlock()
+
+	r.finalizeAccuse()
+}
+
+// finalizeAccuse resolves the current vote — either because everyone has voted
+// or because the voteDuration timer expired. Any eligible voter who hasn't
+// voted counts as "innocent". Idempotent: a second call after State flips back
+// to "playing" is a no-op (handles race between last vote and timer).
+func (r *Room) finalizeAccuse() {
+	r.mu.Lock()
+	acc := r.Accuse
+	if acc == nil || r.State != "voting" {
+		r.mu.Unlock()
+		return
+	}
+	if acc.timer != nil {
+		acc.timer.Stop()
+	}
+
+	// Auto-fill missing votes as "innocent".
+	for _, p := range r.Players {
+		if !p.Alive {
+			continue
+		}
+		if p.ID == acc.AccuserID || p.ID == acc.TargetID {
+			continue
+		}
+		if _, voted := acc.Votes[p.ID]; !voted {
+			acc.Votes[p.ID] = false
+		}
 	}
 
 	yes, no := 0, 0
@@ -263,35 +342,194 @@ func (r *Room) submitAccuseVote(voterID string, guilty bool) {
 		}
 	}
 	targetID := acc.TargetID
-	targetName, targetIsSpy := "", false
+	var target *Player
 	for _, p := range r.Players {
 		if p.ID == targetID {
-			targetName = p.Name
-			targetIsSpy = p.IsSpy
+			target = p
 			break
+		}
+	}
+	targetName := ""
+	targetIsSpy := false
+	if target != nil {
+		targetName = target.Name
+		targetIsSpy = target.IsSpy
+	}
+
+	majority := yes > no
+	targetDied := false
+	var endWithSpyWins *bool
+	var endReason string
+	if majority && target != nil && target.Alive {
+		target.Alive = false
+		targetDied = true
+		if targetIsSpy {
+			if r.aliveSpies() == 0 {
+				f := false
+				endWithSpyWins = &f
+				endReason = "all_spies_caught"
+			}
+		} else {
+			if r.aliveCivilians() == 0 {
+				t := true
+				endWithSpyWins = &t
+				endReason = "all_civilians_dead"
+			}
 		}
 	}
 
 	r.State = "playing"
 	r.Accuse = nil
+	snap := make([]*Player, len(r.Players))
+	copy(snap, r.Players)
+	hostID := r.HostID
 	r.mu.Unlock()
 
-	majority := yes > no
 	r.broadcast(enc("accuse_result", map[string]interface{}{
 		"target_id":      targetID,
 		"target_name":    targetName,
 		"target_is_spy":  targetIsSpy,
+		"target_died":    targetDied,
 		"guilty_votes":   yes,
 		"innocent_votes": no,
 		"majority":       majority,
 	}))
-
-	if majority {
-		if targetIsSpy {
-			r.endGame("voted_spy", false)
-		} else {
-			r.endGame("wrongly_accused", true)
+	if targetDied {
+		for _, pl := range snap {
+			pl.send(enc("player_list", map[string]interface{}{
+				"players": toInfoList(snap),
+				"host_id": hostID,
+			}))
 		}
+	}
+
+	if endWithSpyWins != nil {
+		r.endGame(endReason, *endWithSpyWins)
+	}
+}
+
+func (r *Room) handleSpyGuess(spyID, guess string) {
+	r.mu.Lock()
+	if r.State != "playing" {
+		r.mu.Unlock()
+		return
+	}
+	var spy *Player
+	for _, p := range r.Players {
+		if p.ID == spyID {
+			spy = p
+			break
+		}
+	}
+	if spy == nil || !spy.IsSpy || !spy.Alive {
+		r.mu.Unlock()
+		return
+	}
+	correct := guess == r.Location
+	spyName := spy.Name
+	var endWithSpyWins *bool
+	var endReason string
+	if correct {
+		t := true
+		endWithSpyWins = &t
+		endReason = "spy_guessed"
+	} else {
+		spy.Alive = false
+		if r.aliveSpies() == 0 {
+			f := false
+			endWithSpyWins = &f
+			endReason = "all_spies_caught"
+		}
+	}
+	snap := make([]*Player, len(r.Players))
+	copy(snap, r.Players)
+	hostID := r.HostID
+	r.mu.Unlock()
+
+	r.broadcast(enc("spy_guess_result", map[string]interface{}{
+		"spy_name": spyName,
+		"location": guess,
+		"correct":  correct,
+	}))
+	if !correct {
+		for _, pl := range snap {
+			pl.send(enc("player_list", map[string]interface{}{
+				"players": toInfoList(snap),
+				"host_id": hostID,
+			}))
+		}
+	}
+
+	if endWithSpyWins != nil {
+		r.endGame(endReason, *endWithSpyWins)
+	}
+}
+
+func (r *Room) removeDisconnected(playerID string) {
+	r.mu.Lock()
+	idx := -1
+	for i, pl := range r.Players {
+		if pl.ID == playerID {
+			if pl.Connected {
+				r.mu.Unlock()
+				return
+			}
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		r.mu.Unlock()
+		return
+	}
+	removed := r.Players[idx]
+	r.Players = append(r.Players[:idx], r.Players[idx+1:]...)
+	n := len(r.Players)
+	if n == 0 {
+		r.mu.Unlock()
+		roomsMu.Lock()
+		delete(rooms, r.Code)
+		roomsMu.Unlock()
+		return
+	}
+	if r.HostID == removed.ID {
+		r.HostID = r.Players[0].ID
+		for _, pl := range r.Players {
+			if pl.Connected {
+				r.HostID = pl.ID
+				break
+			}
+		}
+	}
+
+	// If we were mid-game, the departure may have caught the last spy or
+	// civilian — check win conditions.
+	var endWithSpyWins *bool
+	var endReason string
+	if (r.State == "playing" || r.State == "voting") && removed.Alive {
+		if removed.IsSpy && r.aliveSpies() == 0 {
+			f := false
+			endWithSpyWins = &f
+			endReason = "all_spies_caught"
+		} else if !removed.IsSpy && r.aliveCivilians() == 0 {
+			t := true
+			endWithSpyWins = &t
+			endReason = "all_civilians_dead"
+		}
+	}
+	hostID := r.HostID
+	snap := make([]*Player, n)
+	copy(snap, r.Players)
+	r.mu.Unlock()
+
+	for _, pl := range snap {
+		pl.send(enc("player_list", map[string]interface{}{
+			"players": toInfoList(snap),
+			"host_id": hostID,
+		}))
+	}
+	if endWithSpyWins != nil {
+		r.endGame(endReason, *endWithSpyWins)
 	}
 }
 
@@ -330,7 +568,7 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 	}
 	defer conn.Close()
 
-	player := &Player{ID: randID(), Conn: conn}
+	player := &Player{ID: randID(), Conn: conn, Connected: true}
 	var room *Room
 
 	defer func() {
@@ -338,30 +576,53 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			return
 		}
 		room.mu.Lock()
-		for i, p := range room.Players {
-			if p.ID == player.ID {
-				room.Players = append(room.Players[:i], room.Players[i+1:]...)
+		// If the socket was never reconnected to an existing slot, `player`
+		// is the original Player we added. Otherwise `player` points at the
+		// existing slot. Either way, find the slot by ID.
+		var p *Player
+		for _, pl := range room.Players {
+			if pl.ID == player.ID {
+				p = pl
 				break
 			}
 		}
-		n := len(room.Players)
-		if n == 0 {
+		if p == nil {
 			room.mu.Unlock()
-			roomsMu.Lock()
-			delete(rooms, room.Code)
-			roomsMu.Unlock()
 			return
 		}
-		if room.HostID == player.ID {
-			room.HostID = room.Players[0].ID
+		// This socket is still the active one? If a reconnect already swapped
+		// the Conn, the new connection's defer shouldn't revoke it.
+		p.mu.Lock()
+		stillOurs := p.Conn == conn
+		if stillOurs {
+			p.Conn = nil
 		}
-		hostID := room.HostID
-		snap := make([]*Player, n)
+		p.mu.Unlock()
+		if !stillOurs {
+			room.mu.Unlock()
+			return
+		}
+		p.Connected = false
+		grace := graceLobby
+		if room.State == "playing" || room.State == "voting" {
+			grace = graceGame
+		}
+		r := room
+		pid := p.ID
+		if p.graceTimer != nil {
+			p.graceTimer.Stop()
+		}
+		p.graceTimer = time.AfterFunc(grace, func() {
+			r.removeDisconnected(pid)
+		})
+
+		snap := make([]*Player, len(room.Players))
 		copy(snap, room.Players)
+		hostID := room.HostID
 		room.mu.Unlock()
 
-		for _, p := range snap {
-			p.send(enc("player_list", map[string]interface{}{
+		for _, pl := range snap {
+			pl.send(enc("player_list", map[string]interface{}{
 				"players": toInfoList(snap),
 				"host_id": hostID,
 			}))
@@ -379,27 +640,35 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 		case "create_room":
 			var p struct {
 				Name     string `json:"name"`
-				Duration int    `json:"duration"`
+				SpyCount int    `json:"spy_count"`
 			}
 			json.Unmarshal(msg.Payload, &p)
 			if p.Name == "" {
 				player.send(enc("error", map[string]string{"message": "Введите имя"}))
 				continue
 			}
-			if p.Duration <= 0 {
-				p.Duration = defaultGameDuration
+			if p.SpyCount < 1 {
+				p.SpyCount = 1
+			}
+			if p.SpyCount > maxSpies {
+				p.SpyCount = maxSpies
 			}
 			player.Name = p.Name
+			player.Token = randID() + randID()
+			player.Connected = true
+			player.Alive = true
 			code := randCode()
-			room = &Room{Code: code, Players: []*Player{player}, HostID: player.ID, State: "lobby", Duration: p.Duration}
+			room = &Room{Code: code, Players: []*Player{player}, HostID: player.ID, State: "lobby", SpyCount: p.SpyCount}
 			roomsMu.Lock()
 			rooms[code] = room
 			roomsMu.Unlock()
 			player.send(enc("room_joined", map[string]interface{}{
-				"code":    code,
-				"your_id": player.ID,
-				"host_id": player.ID,
-				"players": toInfoList(room.Players),
+				"code":      code,
+				"your_id":   player.ID,
+				"host_id":   player.ID,
+				"players":   toInfoList(room.Players),
+				"token":     player.Token,
+				"spy_count": p.SpyCount,
 			}))
 
 		case "join_room":
@@ -426,24 +695,144 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 				continue
 			}
 			player.Name = p.Name
+			player.Token = randID() + randID()
+			player.Connected = true
+			player.Alive = true
 			r.Players = append(r.Players, player)
 			snap := make([]*Player, len(r.Players))
 			copy(snap, r.Players)
 			hostID := r.HostID
+			spyCount := r.SpyCount
 			r.mu.Unlock()
 			room = r
 
 			infos := toInfoList(snap)
 			player.send(enc("room_joined", map[string]interface{}{
-				"code":    r.Code,
-				"your_id": player.ID,
-				"host_id": hostID,
-				"players": infos,
+				"code":      r.Code,
+				"your_id":   player.ID,
+				"host_id":   hostID,
+				"players":   infos,
+				"token":     player.Token,
+				"spy_count": spyCount,
 			}))
 			for _, pl := range snap {
 				if pl.ID != player.ID {
 					pl.send(enc("player_list", map[string]interface{}{
 						"players": infos,
+						"host_id": hostID,
+					}))
+				}
+			}
+
+		case "reconnect":
+			var p struct {
+				Code  string `json:"code"`
+				Token string `json:"token"`
+				Name  string `json:"name"`
+			}
+			json.Unmarshal(msg.Payload, &p)
+			if p.Code == "" || p.Token == "" {
+				player.send(enc("error", map[string]string{"message": "Сессия не найдена"}))
+				continue
+			}
+			roomsMu.Lock()
+			r, ok := rooms[p.Code]
+			roomsMu.Unlock()
+			if !ok {
+				player.send(enc("error", map[string]string{"message": "Сессия не найдена"}))
+				continue
+			}
+			r.mu.Lock()
+			var existing *Player
+			for _, pl := range r.Players {
+				if pl.Token == p.Token && pl.Name == p.Name {
+					existing = pl
+					break
+				}
+			}
+			if existing == nil {
+				r.mu.Unlock()
+				player.send(enc("error", map[string]string{"message": "Сессия не найдена"}))
+				continue
+			}
+			if existing.graceTimer != nil {
+				existing.graceTimer.Stop()
+				existing.graceTimer = nil
+			}
+			existing.mu.Lock()
+			existing.Conn = conn
+			existing.mu.Unlock()
+			existing.Connected = true
+
+			// Swap the loop-local player to the existing slot so subsequent
+			// messages on this socket (and the disconnect defer) act on it.
+			player = existing
+			room = r
+
+			snap := make([]*Player, len(r.Players))
+			copy(snap, r.Players)
+			hostID := r.HostID
+			state := r.State
+			spyCount := r.SpyCount
+			role := "civilian"
+			var locVal interface{}
+			if existing.IsSpy {
+				role = "spy"
+				locVal = nil
+			} else if state != "lobby" {
+				locVal = r.Location
+			}
+			alive := existing.Alive
+			var accusePayload map[string]interface{}
+			if r.Accuse != nil && state == "voting" {
+				accuserName, targetName := "", ""
+				for _, pl := range r.Players {
+					if pl.ID == r.Accuse.AccuserID {
+						accuserName = pl.Name
+					}
+					if pl.ID == r.Accuse.TargetID {
+						targetName = pl.Name
+					}
+				}
+				_, alreadyVoted := r.Accuse.Votes[existing.ID]
+				voteLeft := int(time.Until(r.Accuse.EndsAt).Round(time.Second) / time.Second)
+				if voteLeft < 0 {
+					voteLeft = 0
+				}
+				accusePayload = map[string]interface{}{
+					"accuser_id":    r.Accuse.AccuserID,
+					"accuser_name":  accuserName,
+					"target_id":     r.Accuse.TargetID,
+					"target_name":   targetName,
+					"already_voted": alreadyVoted,
+					"vote_seconds":  voteLeft,
+				}
+			}
+			var gameOverPayload map[string]interface{}
+			if state == "over" {
+				gameOverPayload = r.LastGameOver
+			}
+			r.mu.Unlock()
+
+			existing.send(enc("reconnected", map[string]interface{}{
+				"code":      r.Code,
+				"your_id":   existing.ID,
+				"host_id":   hostID,
+				"state":     state,
+				"players":   toInfoList(snap),
+				"role":      role,
+				"location":  locVal,
+				"locations": allLocations,
+				"alive":     alive,
+				"spy_count": spyCount,
+				"accuse":    accusePayload,
+				"game_over": gameOverPayload,
+				"token":     existing.Token,
+			}))
+			for _, pl := range snap {
+				if pl.ID != existing.ID {
+					pl.send(enc("player_list", map[string]interface{}{
+						"players": toInfoList(snap),
 						"host_id": hostID,
 					}))
 				}
@@ -456,13 +845,14 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			room.mu.Lock()
 			isHost := room.HostID == player.ID
 			n := len(room.Players)
+			sc := room.SpyCount
 			room.mu.Unlock()
 			if !isHost {
 				player.send(enc("error", map[string]string{"message": "Только хост может начать игру"}))
 				continue
 			}
-			if n < 3 {
-				player.send(enc("error", map[string]string{"message": "Нужно минимум 3 игрока"}))
+			if n < sc+2 {
+				player.send(enc("error", map[string]string{"message": "Нужно минимум 2 мирных игрока"}))
 				continue
 			}
 			room.startGame()
@@ -516,17 +906,7 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 				Location string `json:"location"`
 			}
 			json.Unmarshal(msg.Payload, &p)
-			correct := p.Location == room.Location
-			room.broadcast(enc("spy_guess_result", map[string]interface{}{
-				"spy_name": player.Name,
-				"location": p.Location,
-				"correct":  correct,
-			}))
-			if correct {
-				room.endGame("spy_guessed", true)
-			} else {
-				room.endGame("spy_guessed_wrong", false)
-			}
+			room.handleSpyGuess(player.ID, p.Location)
 		}
 	}
 }

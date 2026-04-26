@@ -205,24 +205,6 @@
       overflow-y: auto;
     }
 
-    .timer-box {
-      text-align: center;
-      padding: 16px;
-      background: var(--bg3);
-      border-radius: var(--radius);
-      border: 1px solid var(--border);
-    }
-    .timer-box .t-label { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
-    .timer-box .t-value {
-      font-size: 38px;
-      font-weight: 900;
-      font-family: monospace;
-      color: var(--success);
-      transition: color .5s;
-    }
-    .timer-box .t-value.warn  { color: var(--warn); }
-    .timer-box .t-value.danger { color: var(--danger); }
-
     .role-card {
       border-radius: var(--radius);
       padding: 20px;
@@ -354,6 +336,16 @@
     .voting-box h2 { font-size: 22px; font-weight: 800; }
     .voting-box .v-desc { color: var(--text2); font-size: 15px; }
     .voting-box .target-name { color: var(--warn); font-weight: 700; font-size: 20px; }
+    .vote-timer {
+      font-family: monospace;
+      font-size: 28px;
+      font-weight: 800;
+      text-align: center;
+      color: var(--success);
+      transition: color .3s;
+    }
+    .vote-timer.warn   { color: var(--warn); }
+    .vote-timer.danger { color: var(--danger); }
     .vote-buttons { display: flex; gap: 12px; }
     .vote-buttons button { flex: 1; padding: 16px; font-size: 16px; }
     .waiting-vote { color: var(--text2); font-size: 14px; }
@@ -402,6 +394,40 @@
     .reveal-row .r-val { font-weight: 700; font-size: 15px; }
     .over-box .reason { color: var(--text2); font-size: 14px; }
 
+    #reconnect-banner {
+      display: none;
+      position: fixed;
+      top: 0; left: 0; right: 0;
+      background: var(--warn);
+      color: #1a1a1a;
+      font-weight: 600;
+      font-size: 13px;
+      padding: 8px 12px;
+      text-align: center;
+      z-index: 1000;
+    }
+    .player-item.disconnected, .p-item.disconnected {
+      opacity: .4;
+    }
+    .player-item.disconnected .pname::after,
+    .p-item.disconnected .p-name::after {
+      content: ' (не в сети)';
+      color: var(--text2);
+      font-size: 11px;
+      font-weight: 400;
+    }
+    .player-item.dead, .p-item.dead {
+      opacity: .55;
+      text-decoration: line-through;
+    }
+    .p-item.dead { cursor: default; }
+    .role-card.dead {
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      color: var(--text2);
+      filter: grayscale(1);
+    }
+
     /* ───────────────────────── RESPONSIVE ───────────────────────── */
     @media (max-width: 640px) {
       #screen-game { flex-direction: column; }
@@ -414,13 +440,14 @@
         flex-wrap: wrap;
         gap: 10px;
       }
-      .timer-box  { flex: 0 0 auto; }
       .role-card  { flex: 1; min-width: 140px; }
       .players-panel { display: none; }
     }
   </style>
 </head>
 <body>
+
+<div id="reconnect-banner"></div>
 
 <!-- ═══════════════════════ HOME ═══════════════════════ -->
 <div id="screen-home" class="screen active">
@@ -438,14 +465,11 @@
 
       <input id="home-name" type="text" placeholder="Ваше имя" maxlength="20" />
 
-      <div id="create-duration-wrap">
-        <select id="home-duration">
-          <option value="180">3 минуты</option>
-          <option value="300">5 минут</option>
-          <option value="480" selected>8 минут</option>
-          <option value="600">10 минут</option>
-          <option value="900">15 минут</option>
-          <option value="1200">20 минут</option>
+      <div id="create-spycount-wrap">
+        <select id="home-spycount">
+          <option value="1" selected>1 шпион</option>
+          <option value="2">2 шпиона</option>
+          <option value="3">3 шпиона</option>
         </select>
       </div>
 
@@ -494,11 +518,6 @@
 
   <!-- Left panel -->
   <div class="game-left">
-    <div class="timer-box">
-      <div class="t-label">ОСТАЛОСЬ ВРЕМЕНИ</div>
-      <div class="t-value" id="timer-display">8:00</div>
-    </div>
-
     <div class="role-card" id="role-card">
       <div class="r-label">ВЫ</div>
       <div class="r-role" id="role-title">—</div>
@@ -539,6 +558,7 @@
   <div class="voting-box">
     <div class="card">
       <h2>Голосование!</h2>
+      <div class="vote-timer" id="vote-timer">0:30</div>
       <p class="v-desc" id="vote-desc">Обвиняется:</p>
       <p class="target-name" id="vote-target-name"></p>
 
@@ -559,7 +579,7 @@
 
     <div class="reveal card">
       <div class="reveal-row">
-        <span class="r-key">Шпион</span>
+        <span class="r-key">Шпионы</span>
         <span class="r-val" id="over-spy-name"></span>
       </div>
       <div class="reveal-row">
@@ -586,13 +606,72 @@ let ws = null;
 let myID = '';
 let hostID = '';
 let roomCode = '';
+let myName = '';
+let myToken = '';
 let isSpy = false;
 let myLocation = '';
-let players = [];   // [{id, name}]
+let spyCount = 1;
+let amAlive = true;
+let players = [];   // [{id, name, connected, alive}]
 let gameTab = 'create';
-let timerInterval = null;
-let currentSeconds = 0;
 let inVoting = false;
+let intentionalClose = false;
+let reconnectInProgress = false;
+let voteTimerInterval = null;
+
+function startVoteTimer(seconds) {
+  stopVoteTimer();
+  let left = Math.max(0, seconds | 0);
+  renderVoteTimer(left);
+  voteTimerInterval = setInterval(() => {
+    left--;
+    renderVoteTimer(left);
+    if (left <= 0) stopVoteTimer();
+  }, 1000);
+}
+
+function stopVoteTimer() {
+  if (voteTimerInterval) {
+    clearInterval(voteTimerInterval);
+    voteTimerInterval = null;
+  }
+}
+
+function renderVoteTimer(s) {
+  const el = document.getElementById('vote-timer');
+  if (!el) return;
+  if (s < 0) s = 0;
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  el.textContent = `${m}:${String(sec).padStart(2, '0')}`;
+  el.className = 'vote-timer';
+  if (s <= 5) el.classList.add('danger');
+  else if (s <= 10) el.classList.add('warn');
+}
+
+function refreshAmAlive() {
+  const me = players.find(p => p.id === myID);
+  amAlive = me ? (me.alive !== false) : true;
+}
+
+// ══════════════════════════════════════════════════════
+//  Session (localStorage)
+// ══════════════════════════════════════════════════════
+const SESSION_KEY = 'spyfall_session_v1';
+
+function saveSession() {
+  if (!roomCode || !myToken || !myName) return;
+  localStorage.setItem(SESSION_KEY, JSON.stringify({
+    code:  roomCode,
+    token: myToken,
+    name:  myName,
+  }));
+}
+function loadSession() {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); }
+  catch (_) { return null; }
+}
+function clearSession() { localStorage.removeItem(SESSION_KEY); }
 
 // ══════════════════════════════════════════════════════
 //  WebSocket
@@ -603,8 +682,34 @@ function connect(cb) {
   ws.onopen = cb;
   ws.onmessage = e => handle(JSON.parse(e.data));
   ws.onclose = () => {
-    showError('home-error', 'Соединение разорвано. Обновите страницу.');
+    if (intentionalClose) { intentionalClose = false; return; }
+    const s = loadSession();
+    if (s) {
+      tryReconnect(s, 'Соединение потеряно, переподключаемся...');
+    } else {
+      showError('home-error', 'Соединение разорвано. Обновите страницу.');
+    }
   };
+}
+
+function tryReconnect(s, msg) {
+  reconnectInProgress = true;
+  showReconnectBanner(msg);
+  setTimeout(() => {
+    connect(() => send('reconnect', { code: s.code, token: s.token, name: s.name }));
+  }, 600);
+}
+
+function showReconnectBanner(msg) {
+  const el = document.getElementById('reconnect-banner');
+  if (!el) return;
+  el.textContent = msg;
+  el.style.display = 'block';
+}
+function hideReconnectBanner() {
+  reconnectInProgress = false;
+  const el = document.getElementById('reconnect-banner');
+  if (el) el.style.display = 'none';
 }
 
 function send(type, payload) {
@@ -618,17 +723,28 @@ function send(type, payload) {
 function handle(msg) {
   const p = msg.payload || {};
   switch (msg.type) {
-    case 'error':         showError(currentErrorTarget(), p.message); break;
+    case 'error':         onError(p.message); break;
     case 'room_joined':   onRoomJoined(p); break;
+    case 'reconnected':   onReconnected(p); break;
     case 'player_list':   onPlayerList(p); break;
     case 'game_started':  onGameStarted(p); break;
-    case 'timer_tick':    onTimerTick(p.seconds); break;
     case 'chat_msg':      addChatMsg(p); break;
     case 'accuse_started': onAccuseStarted(p); break;
     case 'accuse_result':  onAccuseResult(p); break;
     case 'spy_guess_result': onSpyGuessResult(p); break;
     case 'game_over':     onGameOver(p); break;
   }
+}
+
+function onError(message) {
+  if (reconnectInProgress) {
+    clearSession();
+    hideReconnectBanner();
+    goHomeClean();
+    showError('home-error', message || 'Сессия не найдена');
+    return;
+  }
+  showError(currentErrorTarget(), message);
 }
 
 function currentErrorTarget() {
@@ -644,7 +760,7 @@ function switchTab(tab) {
   document.getElementById('tab-create').classList.toggle('active', tab === 'create');
   document.getElementById('tab-join').classList.toggle('active', tab === 'join');
   document.getElementById('join-code-wrap').style.display = tab === 'join' ? '' : 'none';
-  document.getElementById('create-duration-wrap').style.display = tab === 'create' ? '' : 'none';
+  document.getElementById('create-spycount-wrap').style.display = tab === 'create' ? '' : 'none';
   document.getElementById('home-btn').textContent = tab === 'create' ? 'Создать комнату' : 'Войти в комнату';
 }
 
@@ -655,8 +771,8 @@ function homeAction() {
 
   connect(() => {
     if (gameTab === 'create') {
-      const duration = parseInt(document.getElementById('home-duration').value, 10);
-      send('create_room', { name, duration });
+      const spy_count = parseInt(document.getElementById('home-spycount').value, 10);
+      send('create_room', { name, spy_count });
     } else {
       const code = document.getElementById('home-code').value.trim().toUpperCase();
       if (!code || code.length !== 4) { showError('home-error', 'Введите 4-значный код'); return; }
@@ -673,6 +789,12 @@ function onRoomJoined(p) {
   hostID  = p.host_id;
   roomCode = p.code;
   players = p.players;
+  myToken = p.token || myToken;
+  if (typeof p.spy_count === 'number') spyCount = p.spy_count;
+  const me = players.find(x => x.id === myID);
+  if (me) myName = me.name;
+  refreshAmAlive();
+  saveSession();
 
   document.getElementById('lobby-code-display').textContent = p.code;
   document.getElementById('game-room-code').textContent = 'Комната: ' + p.code;
@@ -680,12 +802,102 @@ function onRoomJoined(p) {
   showScreen('lobby');
 }
 
+function onReconnected(p) {
+  hideReconnectBanner();
+  myID       = p.your_id;
+  hostID     = p.host_id;
+  roomCode   = p.code;
+  players    = p.players;
+  myToken    = p.token || myToken;
+  isSpy      = p.role === 'spy';
+  myLocation = p.location || '';
+  spyCount   = p.spy_count || 1;
+  amAlive    = p.alive !== false;
+  inVoting   = false;
+  const me = players.find(x => x.id === myID);
+  if (me) myName = me.name;
+  saveSession();
+
+  document.getElementById('lobby-code-display').textContent = p.code;
+  document.getElementById('game-room-code').textContent = 'Комната: ' + p.code;
+
+  if (p.state === 'lobby') {
+    renderLobbyPlayers();
+    showScreen('lobby');
+    return;
+  }
+
+  if (p.state === 'over') {
+    if (p.game_over) onGameOver(p.game_over);
+    else showScreen('home');
+    return;
+  }
+
+  // playing or voting — rebuild game screen
+  const card = document.getElementById('role-card');
+  card.className = 'role-card ' + (isSpy ? 'spy' : 'civilian');
+  document.getElementById('role-title').textContent    = isSpy ? 'ШПИОН' : myLocation;
+  document.getElementById('role-location').textContent = isSpy ? 'Угадай локацию!' : 'Локация известна';
+
+  const bar = document.getElementById('spy-guess-bar');
+  if (isSpy) {
+    bar.style.display = '';
+    const sel = document.getElementById('spy-location-select');
+    sel.innerHTML = (p.locations || []).map(l => `<option>${esc(l)}</option>`).join('');
+  } else {
+    bar.style.display = 'none';
+  }
+
+  document.getElementById('chat-area').innerHTML = '';
+  addSystemMsg('🔄 Подключение восстановлено');
+  if (isSpy) addSystemMsg('👁 Вы — ШПИОН. Слушайте внимательно!');
+  else addSystemMsg(`📍 Локация: ${myLocation}`);
+  if (!amAlive) addSystemMsg('💀 Вы уже выбыли. Наблюдаете за игрой.');
+
+  renderGamePlayers();
+  applyAliveState();
+  showScreen('game');
+
+  if (p.state === 'voting' && p.accuse) {
+    onAccuseStarted({
+      accuser_id:   p.accuse.accuser_id,
+      accuser_name: p.accuse.accuser_name,
+      target_id:    p.accuse.target_id,
+      target_name:  p.accuse.target_name,
+      vote_seconds: p.accuse.vote_seconds,
+    });
+    if (p.accuse.already_voted) {
+      document.getElementById('vote-buttons').style.display = 'none';
+      const w = document.getElementById('waiting-vote');
+      w.style.display = '';
+      w.textContent = 'Голос принят, ждём остальных...';
+    }
+  }
+}
+
 function onPlayerList(p) {
   players = p.players;
   hostID  = p.host_id;
+  refreshAmAlive();
   renderLobbyPlayers();
   if (document.getElementById('screen-game').classList.contains('active')) {
     renderGamePlayers();
+    applyAliveState();
+  }
+}
+
+function applyAliveState() {
+  // Called whenever `players` updates. Adjusts self-UI for dead state.
+  const card = document.getElementById('role-card');
+  const guessBar = document.getElementById('spy-guess-bar');
+  if (!amAlive) {
+    card.className = 'role-card dead';
+    document.getElementById('role-title').textContent = 'ВЫ МЁРТВЫ';
+    document.getElementById('role-location').textContent = isSpy ? 'Были шпионом' : 'Были мирным';
+    if (guessBar) guessBar.style.display = 'none';
+  } else {
+    // alive: guess bar visible only for spy; role-card keeps its existing state
+    if (guessBar) guessBar.style.display = isSpy ? '' : 'none';
   }
 }
 
@@ -699,10 +911,13 @@ function renderLobbyPlayers() {
   el.innerHTML = '';
   players.forEach(pl => {
     const div = document.createElement('div');
-    div.className = 'player-item';
+    const classes = ['player-item'];
+    if (pl.connected === false) classes.push('disconnected');
+    if (pl.alive === false)     classes.push('dead');
+    div.className = classes.join(' ');
     div.innerHTML = `
       <div class="avatar">${pl.name[0].toUpperCase()}</div>
-      <span class="pname">${esc(pl.name)}${pl.id === myID ? ' (вы)' : ''}</span>
+      <span class="pname">${pl.alive === false ? '💀 ' : ''}${esc(pl.name)}${pl.id === myID ? ' (вы)' : ''}</span>
       ${pl.id === hostID ? '<span class="crown" title="Хост">👑</span>' : ''}
     `;
     el.appendChild(div);
@@ -721,7 +936,9 @@ function onGameStarted(p) {
   isSpy      = p.role === 'spy';
   myLocation = p.location || '';
   players    = p.players;
+  spyCount   = p.spy_count || 1;
   inVoting   = false;
+  refreshAmAlive();
 
   // Role card
   const card = document.getElementById('role-card');
@@ -734,19 +951,18 @@ function onGameStarted(p) {
   if (isSpy) {
     bar.style.display = '';
     const sel = document.getElementById('spy-location-select');
-    sel.innerHTML = p.locations.map(l => `<option>${esc(l)}</option>`).join('');
+    sel.innerHTML = (p.locations || []).map(l => `<option>${esc(l)}</option>`).join('');
   } else {
     bar.style.display = 'none';
   }
 
   // Clear chat
   document.getElementById('chat-area').innerHTML = '';
-  addSystemMsg('🎮 Игра началась! Задавайте вопросы, ищите шпиона!');
+  const spiesWord = spyCount === 1 ? 'шпион' : (spyCount < 5 ? 'шпиона' : 'шпионов');
+  addSystemMsg(`🎮 Игра началась! Среди вас ${spyCount} ${spiesWord}.`);
   if (isSpy) addSystemMsg('👁 Вы — ШПИОН. Слушайте внимательно!');
   else addSystemMsg(`📍 Локация: ${myLocation}`);
 
-  // Timer
-  startTimer(p.duration);
   renderGamePlayers();
   showScreen('game');
 }
@@ -756,13 +972,18 @@ function renderGamePlayers() {
   el.innerHTML = '';
   players.forEach(pl => {
     const div = document.createElement('div');
-    div.className = 'p-item' + (pl.id === myID ? ' me' : '');
+    const classes = ['p-item'];
+    if (pl.id === myID) classes.push('me');
+    if (pl.connected === false) classes.push('disconnected');
+    if (pl.alive === false)     classes.push('dead');
+    div.className = classes.join(' ');
     div.innerHTML = `
-      <div class="p-avatar">${pl.name[0].toUpperCase()}</div>
+      <div class="p-avatar">${pl.alive === false ? '💀' : pl.name[0].toUpperCase()}</div>
       <span class="p-name">${esc(pl.name)}</span>
       <span class="p-tag">${pl.id === myID ? 'вы' : pl.id === hostID ? '👑' : ''}</span>
     `;
-    if (pl.id !== myID) {
+    const canAccuse = pl.id !== myID && pl.connected !== false && pl.alive !== false && amAlive;
+    if (canAccuse) {
       div.onclick = () => accusePlayer(pl.id, pl.name);
       div.title = `Обвинить ${pl.name}`;
     }
@@ -771,36 +992,9 @@ function renderGamePlayers() {
 }
 
 function accusePlayer(targetID, targetName) {
+  if (!amAlive) return;
   if (!confirm(`Обвинить ${targetName}?`)) return;
   send('accuse', { target_id: targetID });
-}
-
-// Timer
-function startTimer(seconds) {
-  if (timerInterval) clearInterval(timerInterval);
-  currentSeconds = seconds;
-  updateTimerDisplay(seconds);
-  timerInterval = setInterval(() => {
-    currentSeconds--;
-    updateTimerDisplay(currentSeconds);
-    if (currentSeconds <= 0) clearInterval(timerInterval);
-  }, 1000);
-}
-
-function onTimerTick(s) {
-  currentSeconds = s;
-  updateTimerDisplay(s);
-}
-
-function updateTimerDisplay(s) {
-  if (s < 0) s = 0;
-  const m = Math.floor(s / 60);
-  const sec = s % 60;
-  const el = document.getElementById('timer-display');
-  el.textContent = `${m}:${String(sec).padStart(2, '0')}`;
-  el.className = 't-value';
-  if (s <= 30) el.classList.add('danger');
-  else if (s <= 90) el.classList.add('warn');
 }
 
 // Chat
@@ -836,6 +1030,7 @@ function addSystemMsg(text) {
 
 // Spy guess
 function spyGuess() {
+  if (!amAlive) return;
   const loc = document.getElementById('spy-location-select').value;
   if (!confirm(`Угадать локацию "${loc}"?`)) return;
   send('spy_guess', { location: loc });
@@ -845,7 +1040,7 @@ function onSpyGuessResult(p) {
   if (p.correct) {
     addSystemMsg(`✅ ${esc(p.spy_name)} угадал локацию "${esc(p.location)}"!`);
   } else {
-    addSystemMsg(`❌ ${esc(p.spy_name)} ошибся — "${esc(p.location)}" неверно!`);
+    addSystemMsg(`❌ ${esc(p.spy_name)} ошибся — "${esc(p.location)}". Шпион выбывает.`);
   }
 }
 
@@ -860,7 +1055,12 @@ function onAccuseStarted(p) {
   document.getElementById('vote-target-name').textContent = p.target_name;
   document.getElementById('vote-progress').textContent = '';
 
-  if (isAccuser || isTarget) {
+  if (!amAlive) {
+    document.getElementById('vote-buttons').style.display = 'none';
+    const w = document.getElementById('waiting-vote');
+    w.style.display = '';
+    w.textContent = 'Вы мёртвы — наблюдаете за голосованием.';
+  } else if (isAccuser || isTarget) {
     document.getElementById('vote-buttons').style.display  = 'none';
     document.getElementById('waiting-vote').style.display  = '';
     const role = isAccuser ? 'обвинитель' : 'обвиняемый';
@@ -879,6 +1079,7 @@ function onAccuseStarted(p) {
   }
 
   addSystemMsg(`⚠️ ${p.accuser_name} обвиняет ${p.target_name}! Голосуем...`);
+  startVoteTimer(typeof p.vote_seconds === 'number' ? p.vote_seconds : 30);
   showScreen('voting');
 }
 
@@ -891,11 +1092,15 @@ function sendVote(guilty) {
 
 function onAccuseResult(p) {
   inVoting = false;
-  const verdict = p.majority ? 'Большинство решило: ВИНОВЕН' : 'Большинство решило: НЕВИНОВЕН';
-  const spy_text = p.majority
-    ? (p.target_is_spy ? ' — и это был шпион!' : ' — но шпион не пойман...')
-    : '';
-  addSystemMsg(`🗳 ${p.target_name}: За — ${p.guilty_votes}, Против — ${p.innocent_votes}. ${verdict}${spy_text}`);
+  stopVoteTimer();
+  const verdict = p.majority ? 'ВИНОВЕН' : 'НЕВИНОВЕН';
+  let extra = '';
+  if (p.target_died) {
+    extra = p.target_is_spy
+      ? ` — ${esc(p.target_name)} был шпионом и выбывает.`
+      : ` — ${esc(p.target_name)} был мирным и выбывает.`;
+  }
+  addSystemMsg(`🗳 ${esc(p.target_name)}: За — ${p.guilty_votes}, Против — ${p.innocent_votes}. ${verdict}${extra}`);
   showScreen('game');
 }
 
@@ -903,14 +1108,15 @@ function onAccuseResult(p) {
 //  Game Over
 // ══════════════════════════════════════════════════════
 function onGameOver(p) {
-  if (timerInterval) clearInterval(timerInterval);
+  clearSession();
 
-  const spyWins = p.winner === 'spy';
+  const spiesWin = p.winner === 'spies';
   const banner = document.getElementById('over-banner');
-  banner.className = 'win-banner ' + (spyWins ? 'spy-wins' : 'civ-wins');
-  banner.textContent = spyWins ? 'Шпион победил!' : 'Мирные победили!';
+  banner.className = 'win-banner ' + (spiesWin ? 'spy-wins' : 'civ-wins');
+  banner.textContent = spiesWin ? 'Шпионы победили!' : 'Мирные победили!';
 
-  document.getElementById('over-spy-name').textContent  = p.spy_name;
+  const spyNames = (p.spies || []).map(s => esc(s.name)).join(', ');
+  document.getElementById('over-spy-name').textContent  = spyNames || '—';
   document.getElementById('over-location').textContent  = p.location;
   document.getElementById('over-reason').textContent    = reasonText(p.reason);
 
@@ -919,24 +1125,38 @@ function onGameOver(p) {
 
 function reasonText(r) {
   switch (r) {
-    case 'voted_spy':        return 'Шпион разоблачён голосованием';
-    case 'wrongly_accused':  return 'Невинный признан виновным';
-    case 'spy_guessed':      return 'Шпион угадал локацию';
-    case 'spy_guessed_wrong':return 'Шпион ошибся с локацией';
-    case 'time':             return 'Время вышло';
-    default:                 return r;
+    case 'all_spies_caught':   return 'Все шпионы пойманы';
+    case 'all_civilians_dead': return 'Все мирные выбыли';
+    case 'spy_guessed':        return 'Шпион угадал локацию';
+    default:                   return r;
   }
 }
 
 function goHome() {
+  clearSession();
+  goHomeClean();
+}
+
+function goHomeClean() {
+  intentionalClose = true;
+  stopVoteTimer();
   if (ws) { ws.close(); ws = null; }
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-  myID = ''; hostID = ''; roomCode = ''; isSpy = false; players = [];
+  myID = ''; hostID = ''; roomCode = ''; myToken = ''; myName = '';
+  isSpy = false; amAlive = true; spyCount = 1; players = [];
   document.getElementById('home-name').value = '';
   document.getElementById('home-code').value = '';
   clearError('home-error');
+  hideReconnectBanner();
   showScreen('home');
 }
+
+// Auto-reconnect on page load if we have a saved session.
+window.addEventListener('DOMContentLoaded', () => {
+  const s = loadSession();
+  if (s && s.code && s.token && s.name) {
+    tryReconnect(s, 'Восстановление сессии...');
+  }
+});
 
 // ══════════════════════════════════════════════════════
 //  Helpers
