@@ -327,6 +327,10 @@
       border: 1px solid var(--border);
       border-radius: var(--radius);
     }
+    .turn-status { padding: 12px 16px; background: var(--bg3); border-bottom: 1px solid var(--border); }
+    .turn-status p { margin-bottom: 8px; font-size: 14px; }
+    .turn-dialog { max-width: 480px; }
+    .round-vote-timer { color: var(--warn); font-weight: 700; }
     .locations-dialog::backdrop { background: rgb(0 0 0 / 70%); }
     .locations-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .locations-dialog p { margin: 12px 0; color: var(--text2); font-size: 14px; }
@@ -554,6 +558,11 @@
       <span class="room-code" id="game-room-code"></span>
     </div>
 
+    <div class="turn-status" id="turn-status" style="display:none;" aria-live="polite">
+      <p id="turn-status-text"></p>
+      <button class="btn-primary" id="show-turn-button" onclick="showTurnDialog()">Показать ход</button>
+      <button class="btn-primary" id="show-round-vote-button" onclick="showRoundVoteDialog()" style="display:none;">Голосование</button>
+    </div>
     <div class="chat-area" id="chat-area"></div>
 
     <div class="spy-guess-bar" id="spy-guess-bar" style="display:none;">
@@ -569,6 +578,25 @@
     </div>
   </div>
 </div>
+
+<dialog id="turn-dialog" class="locations-dialog turn-dialog" aria-labelledby="turn-title" aria-describedby="turn-description">
+  <h2 id="turn-title"></h2>
+  <p id="turn-description"></p>
+  <p>Нажмите «ОК», когда вопрос задан и ответ получен. Ход перейдёт дальше после подтверждения обоих игроков.</p>
+  <button class="btn-primary" id="turn-ok" onclick="confirmTurn()" autofocus>ОК</button>
+  <button class="btn-ghost" id="turn-locations" onclick="openLocations()">Места</button>
+</dialog>
+
+<dialog id="round-vote-dialog" class="locations-dialog" aria-labelledby="round-vote-title" aria-describedby="round-vote-description">
+  <div class="locations-header">
+    <h2 id="round-vote-title">Кто шпион?</h2>
+    <button class="btn-ghost" onclick="document.getElementById('round-vote-dialog').close()">Закрыть</button>
+  </div>
+  <p id="round-vote-description">Выберите подозреваемого. Для выбывания нужно больше половины голосов живых игроков. При равенстве или отсутствии большинства никто не выбывает.</p>
+  <p>Осталось: <span id="round-vote-timer" class="round-vote-timer"></span></p>
+  <p id="round-vote-status" aria-live="polite"></p>
+  <div id="round-vote-options" class="locations-grid"></div>
+</dialog>
 
 <dialog id="locations-dialog" class="locations-dialog" aria-labelledby="locations-title" aria-describedby="locations-description">
   <div class="locations-header">
@@ -644,6 +672,11 @@ let inVoting = false;
 let intentionalClose = false;
 let reconnectInProgress = false;
 let voteTimerInterval = null;
+let roundState = null;
+let roundRevision = -1;
+let shownTurnID = null;
+let shownVoteID = null;
+let roundVoteTimerInterval = null;
 
 function startVoteTimer(seconds) {
   stopVoteTimer();
@@ -759,6 +792,8 @@ function handle(msg) {
     case 'accuse_result':  onAccuseResult(p); break;
     case 'spy_guess_result': onSpyGuessResult(p); break;
     case 'game_over':     onGameOver(p); break;
+    case 'round_state': onRoundState(p); break;
+    case 'round_vote_result': onRoundVoteResult(p); break;
   }
 }
 
@@ -829,6 +864,7 @@ function onRoomJoined(p) {
 }
 
 function onReconnected(p) {
+  resetRoundUI();
   hideReconnectBanner();
   myID       = p.your_id;
   hostID     = p.host_id;
@@ -883,6 +919,8 @@ function onReconnected(p) {
   applyAliveState();
   showScreen('game');
 
+  if (p.round_state) onRoundState(p.round_state);
+
   if (p.state === 'voting' && p.accuse) {
     onAccuseStarted({
       accuser_id:   p.accuse.accuser_id,
@@ -908,6 +946,7 @@ function onPlayerList(p) {
   if (document.getElementById('screen-game').classList.contains('active')) {
     renderGamePlayers();
     applyAliveState();
+    renderTurnStatus();
   }
 }
 
@@ -959,6 +998,7 @@ function startGame() {
 //  Game
 // ══════════════════════════════════════════════════════
 function onGameStarted(p) {
+  resetRoundUI();
   isSpy      = p.role === 'spy';
   myLocation = p.location || '';
   players    = p.players;
@@ -1053,6 +1093,159 @@ function addSystemMsg(text) {
   area.scrollTop = area.scrollHeight;
 }
 
+function resetRoundUI() {
+  roundState = null;
+  roundRevision = -1;
+  shownTurnID = null;
+  shownVoteID = null;
+  clearInterval(roundVoteTimerInterval);
+  document.getElementById('turn-status').style.display = 'none';
+  document.getElementById('turn-dialog').close();
+  document.getElementById('round-vote-dialog').close();
+}
+
+function onRoundState(p) {
+  if (!p.round || p.revision < roundRevision) return;
+  if (document.getElementById('screen-over').classList.contains('active') ||
+      document.getElementById('screen-home').classList.contains('active')) return;
+  if ((p.state === 'playing' || p.vote) && !document.getElementById('screen-game').classList.contains('active')) {
+    showScreen('game');
+  }
+  roundRevision = p.revision;
+  roundState = p;
+  players = p.players;
+  refreshAmAlive();
+  inVoting = p.state === 'voting';
+  renderGamePlayers();
+  applyAliveState();
+  renderTurnStatus();
+  if (p.vote) {
+    closeLocations();
+    document.getElementById('turn-dialog').close();
+    renderRoundVote();
+    if (shownVoteID !== p.vote.id) {
+      shownVoteID = p.vote.id;
+      showRoundVoteDialog();
+    }
+    return;
+  }
+  clearInterval(roundVoteTimerInterval);
+  document.getElementById('round-vote-dialog').close();
+  const turn = p.turn;
+  if (!inVoting && turn && amAlive && [turn.asker_id, turn.answerer_id].includes(myID) && !turn.confirmed[myID]) {
+    if (shownTurnID !== turn.id || document.getElementById('turn-dialog').open) {
+      shownTurnID = turn.id;
+      showTurnDialog();
+    }
+  } else {
+    document.getElementById('turn-dialog').close();
+  }
+}
+
+function playerName(id) {
+  return players.find(p => p.id === id)?.name || 'Игрок';
+}
+
+function renderTurnStatus() {
+  const status = document.getElementById('turn-status');
+  status.style.display = roundState ? '' : 'none';
+  if (!roundState) return;
+  const turn = roundState.turn;
+  document.getElementById('show-round-vote-button').style.display = roundState.vote ? '' : 'none';
+  const involved = turn && [turn.asker_id, turn.answerer_id].includes(myID);
+  document.getElementById('show-turn-button').style.display = !inVoting && involved && amAlive && !turn.confirmed[myID] ? '' : 'none';
+  let text = `Круг ${roundState.round}. `;
+  if (inVoting) text += 'Голосование.';
+  else if (turn) {
+    text += `${playerName(turn.asker_id)} спрашивает → ${playerName(turn.answerer_id)} отвечает.`;
+    if (turn.confirmed[myID]) text += ` Вы подтвердили. Ждём ${playerName(myID === turn.asker_id ? turn.answerer_id : turn.asker_id)}.`;
+    const offline = players.filter(p => [turn.asker_id, turn.answerer_id].includes(p.id) && p.connected === false);
+    if (offline.length) text += ` Ожидаем подключения: ${offline.map(p => p.name).join(", ")}.`;
+  }
+  document.getElementById('turn-status-text').textContent = text;
+}
+
+function showTurnDialog() {
+  const turn = roundState?.turn;
+  if (!turn || inVoting || !amAlive || turn.confirmed[myID] || ![turn.asker_id, turn.answerer_id].includes(myID)) return;
+  closeLocations();
+  const asking = turn.asker_id === myID;
+  document.getElementById('turn-title').textContent = asking ? 'Ваш ход — задайте вопрос' : 'Вам задают вопрос';
+  document.getElementById('turn-description').textContent = asking
+    ? `Задайте вопрос игроку ${playerName(turn.answerer_id)}.`
+    : `${playerName(turn.asker_id)} задаёт вам вопрос. Ответьте на него.`;
+  document.getElementById('turn-ok').disabled = false;
+  document.getElementById('turn-locations').style.display = isSpy ? '' : 'none';
+  const dialog = document.getElementById('turn-dialog');
+  if (!dialog.open) dialog.showModal();
+}
+
+function confirmTurn() {
+  const turn = roundState?.turn;
+  if (!turn || inVoting || !amAlive || ![turn.asker_id, turn.answerer_id].includes(myID) || turn.confirmed[myID] || !ws || ws.readyState !== WebSocket.OPEN) return;
+  document.getElementById('turn-ok').disabled = true;
+  send('turn_confirm', { turn_id: turn.id });
+}
+
+function renderRoundVote() {
+  const vote = roundState.vote;
+  const voted = vote.voted.includes(myID);
+  document.getElementById('round-vote-title').textContent = `Круг ${roundState.round}: кто шпион?`;
+  document.getElementById('round-vote-status').textContent = !amAlive
+    ? 'Вы выбыли и наблюдаете за голосованием.'
+    : voted ? 'Голос принят. Ждём остальных.' : 'Выберите одного игрока или пропустите голосование.';
+  const options = document.getElementById('round-vote-options');
+  options.replaceChildren();
+  if (amAlive && !voted) {
+    [...players.filter(p => p.alive !== false), {id:'', name:'Пропустить'}].forEach(p => {
+      const button = document.createElement('button');
+      button.className = 'btn-ghost';
+      button.textContent = p.name + (p.id === myID ? ' (вы)' : '');
+      button.onclick = () => sendRoundVote(p.id);
+      options.appendChild(button);
+    });
+  }
+  clearInterval(roundVoteTimerInterval);
+  const deadline = Date.now() + vote.vote_seconds * 1000;
+  const tick = () => {
+    const left = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+    document.getElementById('round-vote-timer').textContent = `${left} сек.`;
+    if (!left) {
+      clearInterval(roundVoteTimerInterval);
+      options.querySelectorAll("button").forEach(b => b.disabled = true);
+    }
+  };
+  roundVoteTimerInterval = setInterval(tick, 250);
+  tick();
+}
+
+function showRoundVoteDialog() {
+  if (!roundState?.vote) return;
+  const dialog = document.getElementById('round-vote-dialog');
+  if (!dialog.open) dialog.showModal();
+}
+
+function sendRoundVote(targetID) {
+  const vote = roundState?.vote;
+  if (!vote || !amAlive || vote.voted.includes(myID) || !ws || ws.readyState !== WebSocket.OPEN) return;
+  document.getElementById("round-vote-options").querySelectorAll("button").forEach(b => b.disabled = true);
+  send('round_vote', {vote_id: vote.id, target_id: targetID});
+}
+
+function onRoundVoteResult(p) {
+  clearInterval(roundVoteTimerInterval);
+  inVoting = false;
+  players = p.players;
+  refreshAmAlive();
+  renderGamePlayers();
+  applyAliveState();
+  const result = p.target_id
+    ? `${p.target_name} выбывает — ${p.target_is_spy ? 'шпион' : 'мирный'}.`
+    : 'Большинства нет. Никто не выбывает.';
+  addSystemMsg(`🗳 Круг ${p.round}: ${result}`);
+  document.getElementById('round-vote-dialog').close();
+}
+
 // Spy guess
 function renderLocations(locations) {
   const grid = document.getElementById('locations-grid');
@@ -1094,6 +1287,7 @@ function onSpyGuessResult(p) {
 //  Voting
 // ══════════════════════════════════════════════════════
 function onAccuseStarted(p) {
+  shownTurnID = null;
   inVoting = true;
   const isAccuser = p.accuser_id === myID;
   const isTarget  = p.target_id  === myID;
@@ -1154,6 +1348,8 @@ function onAccuseResult(p) {
 //  Game Over
 // ══════════════════════════════════════════════════════
 function onGameOver(p) {
+  resetRoundUI();
+  stopVoteTimer();
   clearSession();
 
   const spiesWin = p.winner === 'spies';
@@ -1184,6 +1380,7 @@ function goHome() {
 }
 
 function goHomeClean() {
+  resetRoundUI();
   intentionalClose = true;
   stopVoteTimer();
   if (ws) { ws.close(); ws = null; }
@@ -1209,6 +1406,8 @@ window.addEventListener('DOMContentLoaded', () => {
 // ══════════════════════════════════════════════════════
 function showScreen(name) {
   closeLocations();
+  document.getElementById('turn-dialog').close();
+  document.getElementById('round-vote-dialog').close();
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById('screen-' + name).classList.add('active');
 }

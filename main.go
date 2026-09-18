@@ -85,15 +85,22 @@ type AccuseState struct {
 }
 
 type Room struct {
-	Code         string
-	Players      []*Player
-	HostID       string
-	mu           sync.Mutex
-	State        string // lobby | playing | voting | over
-	Location     string
-	SpyCount     int
-	Accuse       *AccuseState
-	LastGameOver map[string]interface{}
+	Round         int
+	Turn          *TurnState
+	TurnOrder     []string
+	TurnIndex     int
+	RoundVote     *RoundVoteState
+	turnSequence  uint64
+	roundRevision uint64
+	Code          string
+	Players       []*Player
+	HostID        string
+	mu            sync.Mutex
+	State         string // lobby | playing | voting | over
+	Location      string
+	SpyCount      int
+	Accuse        *AccuseState
+	LastGameOver  map[string]interface{}
 }
 
 const (
@@ -135,6 +142,10 @@ func (r *Room) broadcast(v interface{}) {
 
 func (r *Room) startGame() {
 	r.mu.Lock()
+	if r.State != "lobby" || len(r.Players) < r.SpyCount+2 {
+		r.mu.Unlock()
+		return
+	}
 	r.Location = allLocations[rand.Intn(len(allLocations))]
 
 	// Pick SpyCount unique spies.
@@ -157,6 +168,8 @@ func (r *Room) startGame() {
 	}
 	r.State = "playing"
 	r.LastGameOver = nil
+	r.Round = 0
+	r.beginRoundLocked()
 	snap := make([]*Player, n)
 	copy(snap, r.Players)
 	loc := r.Location
@@ -178,6 +191,7 @@ func (r *Room) startGame() {
 			"spy_count": spyCount,
 		}))
 	}
+	r.broadcastRoundState()
 }
 
 func (r *Room) endGame(reason string, spyWins bool) {
@@ -187,6 +201,15 @@ func (r *Room) endGame(reason string, spyWins bool) {
 		return
 	}
 	r.State = "over"
+	r.Turn = nil
+	if r.RoundVote != nil && r.RoundVote.timer != nil {
+		r.RoundVote.timer.Stop()
+	}
+	r.RoundVote = nil
+	if r.Accuse != nil && r.Accuse.timer != nil {
+		r.Accuse.timer.Stop()
+	}
+	r.Accuse = nil
 	loc := r.Location
 	spies := []map[string]string{}
 	for _, p := range r.Players {
@@ -405,6 +428,8 @@ func (r *Room) finalizeAccuse() {
 
 	if endWithSpyWins != nil {
 		r.endGame(endReason, *endWithSpyWins)
+	} else {
+		r.syncTurn()
 	}
 }
 
@@ -462,6 +487,8 @@ func (r *Room) handleSpyGuess(spyID, guess string) {
 
 	if endWithSpyWins != nil {
 		r.endGame(endReason, *endWithSpyWins)
+	} else {
+		r.syncTurn()
 	}
 }
 
@@ -530,6 +557,8 @@ func (r *Room) removeDisconnected(playerID string) {
 	}
 	if endWithSpyWins != nil {
 		r.endGame(endReason, *endWithSpyWins)
+	} else {
+		r.syncTurn()
 	}
 }
 
@@ -808,6 +837,7 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 					"vote_seconds":  voteLeft,
 				}
 			}
+			roundPayload := enc("round_state", r.roundSnapshotLocked()).Payload
 			var gameOverPayload map[string]interface{}
 			if state == "over" {
 				gameOverPayload = r.LastGameOver
@@ -815,19 +845,20 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			r.mu.Unlock()
 
 			existing.send(enc("reconnected", map[string]interface{}{
-				"code":      r.Code,
-				"your_id":   existing.ID,
-				"host_id":   hostID,
-				"state":     state,
-				"players":   toInfoList(snap),
-				"role":      role,
-				"location":  locVal,
-				"locations": allLocations,
-				"alive":     alive,
-				"spy_count": spyCount,
-				"accuse":    accusePayload,
-				"game_over": gameOverPayload,
-				"token":     existing.Token,
+				"code":        r.Code,
+				"your_id":     existing.ID,
+				"host_id":     hostID,
+				"state":       state,
+				"players":     toInfoList(snap),
+				"role":        role,
+				"location":    locVal,
+				"locations":   allLocations,
+				"alive":       alive,
+				"spy_count":   spyCount,
+				"accuse":      accusePayload,
+				"game_over":   gameOverPayload,
+				"round_state": roundPayload,
+				"token":       existing.Token,
 			}))
 			for _, pl := range snap {
 				if pl.ID != existing.ID {
@@ -836,6 +867,11 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 						"host_id": hostID,
 					}))
 				}
+			}
+
+			// Live events can overtake the reconnect snapshot; finish with fresh state.
+			if state != "lobby" {
+				r.broadcastRoundState()
 			}
 
 		case "start_game":
@@ -897,6 +933,31 @@ func handleWS(w http.ResponseWriter, req *http.Request) {
 			}
 			json.Unmarshal(msg.Payload, &p)
 			room.submitAccuseVote(player.ID, p.Guilty)
+
+		case "turn_confirm":
+			if room == nil {
+				continue
+			}
+			var p struct {
+				TurnID uint64 `json:"turn_id"`
+			}
+			if json.Unmarshal(msg.Payload, &p) != nil {
+				continue
+			}
+			room.confirmTurn(player.ID, p.TurnID)
+
+		case "round_vote":
+			if room == nil {
+				continue
+			}
+			var p struct {
+				VoteID   uint64 `json:"vote_id"`
+				TargetID string `json:"target_id"`
+			}
+			if json.Unmarshal(msg.Payload, &p) != nil {
+				continue
+			}
+			room.submitRoundVote(player.ID, p.TargetID, p.VoteID)
 
 		case "spy_guess":
 			if room == nil || !player.IsSpy {
