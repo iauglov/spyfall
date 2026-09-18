@@ -315,7 +315,24 @@
       background: #1a0808;
       display: flex; gap: 8px; align-items: center;
     }
-    .spy-guess-bar select { flex: 1; }
+    .spy-guess-bar button { margin-left: auto; }
+    .locations-dialog {
+      margin: auto;
+      width: min(760px, calc(100% - 24px));
+      max-height: calc(100dvh - 24px);
+      overflow-y: auto;
+      padding: 20px;
+      background: var(--bg2);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+    }
+    .locations-dialog::backdrop { background: rgb(0 0 0 / 70%); }
+    .locations-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .locations-dialog p { margin: 12px 0; color: var(--text2); font-size: 14px; }
+    .locations-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px; }
+    .locations-grid button { padding: 12px 8px; overflow-wrap: anywhere; }
+    .locations-dialog button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
     .spy-guess-bar .label { font-size: 12px; color: var(--danger); white-space: nowrap; font-weight: 600; }
 
     /* ───────────────────────── VOTING SCREEN ───────────────────────── */
@@ -541,8 +558,8 @@
 
     <div class="spy-guess-bar" id="spy-guess-bar" style="display:none;">
       <span class="label">Угадать локацию:</span>
-      <select id="spy-location-select"></select>
-      <button class="btn-danger" onclick="spyGuess()">Угадать!</button>
+      <button class="btn-danger" onclick="openLocations()">Места</button>
+
     </div>
 
     <div class="chat-input-row">
@@ -552,6 +569,15 @@
     </div>
   </div>
 </div>
+
+<dialog id="locations-dialog" class="locations-dialog" aria-labelledby="locations-title" aria-describedby="locations-description">
+  <div class="locations-header">
+    <h2 id="locations-title">Все места</h2>
+    <button class="btn-ghost" onclick="closeLocations()" autofocus>Закрыть</button>
+  </div>
+  <p id="locations-description">Выберите место, чтобы угадать локацию. Ошибка приведёт к выбыванию.</p>
+  <div id="locations-grid" class="locations-grid"></div>
+</dialog>
 
 <!-- ═══════════════════════ VOTING ═══════════════════════ -->
 <div id="screen-voting" class="screen">
@@ -842,8 +868,7 @@ function onReconnected(p) {
   const bar = document.getElementById('spy-guess-bar');
   if (isSpy) {
     bar.style.display = '';
-    const sel = document.getElementById('spy-location-select');
-    sel.innerHTML = (p.locations || []).map(l => `<option>${esc(l)}</option>`).join('');
+    renderLocations(p.locations || []);
   } else {
     bar.style.display = 'none';
   }
@@ -895,6 +920,7 @@ function applyAliveState() {
     document.getElementById('role-title').textContent = 'ВЫ МЁРТВЫ';
     document.getElementById('role-location').textContent = isSpy ? 'Были шпионом' : 'Были мирным';
     if (guessBar) guessBar.style.display = 'none';
+    closeLocations();
   } else {
     // alive: guess bar visible only for spy; role-card keeps its existing state
     if (guessBar) guessBar.style.display = isSpy ? '' : 'none';
@@ -950,8 +976,7 @@ function onGameStarted(p) {
   const bar = document.getElementById('spy-guess-bar');
   if (isSpy) {
     bar.style.display = '';
-    const sel = document.getElementById('spy-location-select');
-    sel.innerHTML = (p.locations || []).map(l => `<option>${esc(l)}</option>`).join('');
+    renderLocations(p.locations || []);
   } else {
     bar.style.display = 'none';
   }
@@ -1029,11 +1054,32 @@ function addSystemMsg(text) {
 }
 
 // Spy guess
-function spyGuess() {
-  if (!amAlive) return;
-  const loc = document.getElementById('spy-location-select').value;
+function renderLocations(locations) {
+  const grid = document.getElementById('locations-grid');
+  grid.replaceChildren();
+  locations.forEach(loc => {
+    const button = document.createElement('button');
+    button.className = 'btn-ghost';
+    button.textContent = loc;
+    button.onclick = () => spyGuess(loc);
+    grid.appendChild(button);
+  });
+}
+
+function openLocations() {
+  if (!isSpy || !amAlive || inVoting) return;
+  document.getElementById('locations-dialog').showModal();
+}
+
+function closeLocations() {
+  document.getElementById('locations-dialog').close();
+}
+
+function spyGuess(loc) {
+  if (!isSpy || !amAlive || inVoting || !loc) return;
   if (!confirm(`Угадать локацию "${loc}"?`)) return;
   send('spy_guess', { location: loc });
+  closeLocations();
 }
 
 function onSpyGuessResult(p) {
@@ -1162,6 +1208,7 @@ window.addEventListener('DOMContentLoaded', () => {
 //  Helpers
 // ══════════════════════════════════════════════════════
 function showScreen(name) {
+  closeLocations();
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   document.getElementById('screen-' + name).classList.add('active');
 }
